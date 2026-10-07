@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { Validators } from "./validators";
+import { createWorkerSleep, SleepFn } from "./timer";
 
 export interface AvailableTransports {
   webSerial: boolean;
@@ -221,11 +222,26 @@ export class Utils {
     return newBuf;
   }
 
+  private static sleepImpl: SleepFn = createWorkerSleep();
+
   /**
    * Asynchronously pauses the execution for the specified amount of time.
+   *
+   * In browsers the timer runs in a Web Worker, because window timers are throttled
+   * when the page is in the background (a 10 ms packet delay may become ~1 s,
+   * which makes printing slow and can break firmware transfer).
+   * Use {@link setSleepImplementation} to replace this behavior.
    */
   public static sleep(ms: number): Promise<undefined> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return Utils.sleepImpl(ms);
+  }
+
+  /**
+   * Replace the function used by {@link sleep} (and therefore by packet pacing in all clients).
+   * Call without arguments to restore the default one.
+   */
+  public static setSleepImplementation(fn?: SleepFn): void {
+    Utils.sleepImpl = fn ?? createWorkerSleep();
   }
 
   /**

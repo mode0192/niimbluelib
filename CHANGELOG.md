@@ -1,3 +1,8 @@
+# Unreleased
+
+* Fix slow printing and failed firmware transfers when the browser tab is in the background: `Utils.sleep` now runs its timer in a Web Worker (browsers throttle window timers on hidden pages), falling back to `setTimeout` when workers are unavailable.
+* Add `Utils.setSleepImplementation` to replace the sleep function used for packet pacing, `createWorkerSleep`, `SleepFn`.
+
 # 0.47.0
 
 * Fix parsing RfidInfo packet response with extra uuid field.
