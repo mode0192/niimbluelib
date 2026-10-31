@@ -33,6 +33,10 @@ export class BleDefaultConfiguration {
   public static readonly NAME_FILTERS: BluetoothLEScanFilter[] = [
     ...getAllModelFirstLetters().map((l) => ({ namePrefix: l })),
   ];
+  /** How many times to try opening the GATT connection before failing. */
+  public static readonly CONNECT_ATTEMPTS: number = 3;
+  /** Pause between GATT connection attempts. */
+  public static readonly CONNECT_RETRY_DELAY_MS: number = 500;
 }
 
 /**
@@ -76,20 +80,7 @@ export class NiimbotBluetoothClient extends NiimbotAbstractClient {
       throw new Error("Device has no Bluetooth Generic Attribute Profile");
     }
 
-    const disconnectListener = () => {
-      this.gattServer = undefined;
-      this.channel = undefined;
-      this.emit("disconnect", new DisconnectEvent());
-      device.removeEventListener("gattserverdisconnected", disconnectListener);
-    };
-
-    device.addEventListener("gattserverdisconnected", disconnectListener);
-
-    const gattServer: BluetoothRemoteGATTServer = await device.gatt.connect();
-
-    const channel: BluetoothRemoteGATTCharacteristic | undefined = await this.findSuitableBluetoothCharacteristic(
-      gattServer
-    );
+    const { gattServer, channel } = await this.connectGatt(device, device.gatt);
 
     if (channel === undefined) {
       gattServer.disconnect();
@@ -118,6 +109,54 @@ export class NiimbotBluetoothClient extends NiimbotAbstractClient {
     this.emit("connect", new ConnectEvent(result));
 
     return result;
+  }
+
+  /**
+   * Connect to the GATT server and look up the data characteristic.
+   *
+   * Web Bluetooth sometimes drops the link right after `gatt.connect()` succeeds, which surfaces as
+   * `NetworkError: GATT Server is disconnected. Cannot retrieve services.` A new attempt on the same
+   * device usually works, so retry a few times before giving up.
+   */
+  private async connectGatt(
+    device: BluetoothDevice,
+    gatt: BluetoothRemoteGATTServer
+  ): Promise<{ gattServer: BluetoothRemoteGATTServer; channel: BluetoothRemoteGATTCharacteristic | undefined }> {
+    for (let attempt = 1; ; attempt++) {
+      const lastAttempt: boolean = attempt >= BleDefaultConfiguration.CONNECT_ATTEMPTS;
+      let established: boolean = false;
+
+      const disconnectListener = () => {
+        device.removeEventListener("gattserverdisconnected", disconnectListener);
+
+        // A drop while still connecting is handled by the retry below, it is not a user-visible disconnect.
+        if (established || lastAttempt) {
+          this.gattServer = undefined;
+          this.channel = undefined;
+          this.emit("disconnect", new DisconnectEvent());
+        }
+      };
+
+      device.addEventListener("gattserverdisconnected", disconnectListener);
+
+      try {
+        const gattServer: BluetoothRemoteGATTServer = await gatt.connect();
+        const channel = await this.findSuitableBluetoothCharacteristic(gattServer);
+        established = true;
+        return { gattServer, channel };
+      } catch (e) {
+        const retryable: boolean = e instanceof DOMException && e.name === "NetworkError";
+
+        if (!retryable || lastAttempt) {
+          throw e;
+        }
+
+        console.warn(`GATT connection failed (attempt ${attempt}/${BleDefaultConfiguration.CONNECT_ATTEMPTS}), retrying`, e);
+        device.removeEventListener("gattserverdisconnected", disconnectListener);
+        gatt.disconnect();
+        await Utils.sleep(BleDefaultConfiguration.CONNECT_RETRY_DELAY_MS);
+      }
+    }
   }
 
   private async findSuitableBluetoothCharacteristic(
